@@ -4,9 +4,10 @@ use std::{
 };
 
 use bumpalo::boxed::Box as BumpBox;
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use swc_core::{
-    common::{Span, Spanned, SyntaxContext, pass::AstNodePath},
+    common::{BytePos, Span, Spanned, SyntaxContext, pass::AstNodePath},
     ecma::{
         ast::*,
         atoms::atom,
@@ -20,7 +21,7 @@ use turbopack_core::resolve::ExportUsage;
 use crate::{
     AnalyzeMode,
     analyzer::{
-        Bump, BumpVec, ConstantValue, JsValue, WellKnownFunctionKind,
+        Bump, BumpVec, ConstantValue, ImportMap, JsValue, WellKnownFunctionKind,
         cjs_ast::{is_exports_object, is_global},
         graph::{ConditionalKind, Effect, EffectArg, EffectsBlock, EvalContext, VarGraph},
         is_unresolved_id,
@@ -31,7 +32,7 @@ use crate::{
         cjs::{CjsExportsDropCodeGen, DroppableCjsExportAssignment},
         esm::EsmModuleItem,
     },
-    utils::{AstPathRange, unparen},
+    utils::{AstPathRange, extract_name_from_member_prop, extract_names_from_object_pat, unparen},
 };
 
 enum EarlyReturn<'a> {
@@ -193,6 +194,8 @@ mod analyzer_state {
         cjs_exports: Option<CjsExportsCollector>,
         cjs_export_target: bool,
         cjs_export_value: bool,
+        /// Tracked `const x = require(...)` namespace bindings
+        require_bindings: Option<FxHashMap<Id, BytePos>>,
     }
 
     impl<'a> Analyzer<'a, '_> {
@@ -556,6 +559,80 @@ mod analyzer_state {
             self.state.cjs_exports = Some(CjsExportsCollector::default());
         }
 
+        /// Enables `require("…")` export-usage narrowing and seed it
+        /// with information collected by the `ImportMap` visitor.
+        pub(in crate::analyzer::graph) fn enable_require_usage(&mut self, imports: &ImportMap) {
+            let cjs_imports = imports.cjs_imports();
+            self.data.require_usage = cjs_imports.resolved.clone();
+            for span in cjs_imports.bindings.values() {
+                self.data
+                    .require_usage
+                    .insert(*span, ExportUsage::PartialNamespaceObject(SmallVec::new()));
+            }
+            self.state.require_bindings = Some(cjs_imports.bindings.clone());
+        }
+
+        pub(super) fn require_usage_enabled(&self) -> bool {
+            self.state.require_bindings.is_some()
+        }
+
+        pub(super) fn is_tracked_require_binding(&self, id: &Id) -> bool {
+            self.state
+                .require_bindings
+                .as_ref()
+                .is_some_and(|b| b.contains_key(id))
+        }
+
+        /// Records a tracked `const x = require(...)` is used.
+        pub(super) fn record_require_usage(&mut self, id: &Id, member: Option<RcStr>) {
+            let Some(span) = self
+                .state
+                .require_bindings
+                .as_ref()
+                .and_then(|b| b.get(id).copied())
+            else {
+                return;
+            };
+            let Some(usage) = self.data.require_usage.get_mut(&span) else {
+                return;
+            };
+            match member {
+                Some(name) => {
+                    if let ExportUsage::PartialNamespaceObject(names) = usage
+                        && !names.contains(&name)
+                    {
+                        names.push(name);
+                    }
+                }
+                None => *usage = ExportUsage::All,
+            }
+        }
+
+        /// If this is `export const x = require(...)`, mark the whole of `x` as
+        /// observable.
+        pub(super) fn escape_exported_require_bindings(&mut self, node: &ExportDecl) {
+            if self.state.require_bindings.is_none() {
+                return;
+            }
+            let Decl::Var(var) = &node.decl else {
+                return;
+            };
+            for d in &var.decls {
+                if let Pat::Ident(binding) = &d.name {
+                    let span = self
+                        .state
+                        .require_bindings
+                        .as_ref()
+                        .and_then(|b| b.get(&binding.id.to_id()).copied());
+                    if let Some(span) = span
+                        && let Some(usage) = self.data.require_usage.get_mut(&span)
+                    {
+                        *usage = ExportUsage::All;
+                    }
+                }
+            }
+        }
+
         pub(super) fn cjs_exports_enabled(&self) -> bool {
             self.state.cjs_exports.is_some()
         }
@@ -727,38 +804,6 @@ fn extract_names_from_then_callback(call: &CallExpr) -> Option<SmallVec<[RcStr; 
         }
         _ => None,
     }
-}
-
-fn extract_name_from_member_prop(prop: &MemberProp) -> Option<SmallVec<[RcStr; 1]>> {
-    match prop {
-        MemberProp::Ident(ident) => Some(SmallVec::from_buf([ident.sym.as_str().into()])),
-        MemberProp::Computed(ComputedPropName {
-            expr: box Expr::Lit(Lit::Str(s)),
-            ..
-        }) => s.value.as_str().map(|v| SmallVec::from_buf([v.into()])),
-        _ => None,
-    }
-}
-
-fn extract_names_from_object_pat(pat: &Pat) -> Option<SmallVec<[RcStr; 1]>> {
-    let Pat::Object(obj_pat) = pat else {
-        return None;
-    };
-    let mut names = SmallVec::new();
-    for prop in &obj_pat.props {
-        match prop {
-            ObjectPatProp::KeyValue(kv) => match &kv.key {
-                PropName::Ident(ident) => names.push(ident.sym.as_str().into()),
-                PropName::Str(s) => names.push(s.value.as_str()?.into()),
-                _ => return None, // computed key, can't determine statically
-            },
-            ObjectPatProp::Assign(assign) => {
-                names.push(assign.key.sym.as_str().into());
-            }
-            ObjectPatProp::Rest(_) => return None, // rest pattern means all exports needed
-        }
-    }
-    Some(names)
 }
 
 pub fn as_parent_path_with(
@@ -2000,6 +2045,29 @@ impl VisitAstPath for Analyzer<'_, '_> {
             }
         }
 
+        // How a `const x = require(...)` binding is consumed: a static member read
+        // `x.foo` observes that export; anything else observes the whole namespace.
+        if self.require_usage_enabled() {
+            let id = ident.to_id();
+            if self.is_tracked_require_binding(&id) {
+                let member_names = match ast_path.len().checked_sub(2).and_then(|i| ast_path.get(i))
+                {
+                    Some(AstParentNodeRef::MemberExpr(member, MemberExprField::Obj)) => {
+                        extract_name_from_member_prop(&member.prop)
+                    }
+                    _ => None,
+                };
+                match member_names {
+                    Some(names) => {
+                        for name in names {
+                            self.record_require_usage(&id, Some(name));
+                        }
+                    }
+                    None => self.record_require_usage(&id, None),
+                }
+            }
+        }
+
         // Attempt to add import effects.
         if let Some((esm_reference_index, export)) =
             self.eval_context.imports.get_binding(&ident.to_id())
@@ -2416,6 +2484,7 @@ impl VisitAstPath for Analyzer<'_, '_> {
         node: &'ast ExportDecl,
         ast_path: &mut swc_core::ecma::visit::AstNodePath<'r>,
     ) {
+        self.escape_exported_require_bindings(node);
         self.add_esm_module_item(ast_path);
         node.visit_children_with_ast_path(self, ast_path);
     }
