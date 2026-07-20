@@ -236,6 +236,22 @@ export const enum PrefetchHint {
   // `<Link prefetch={true}>` warning — unlike PrefetchDisabled, it has no effect
   // on the actual prefetch behavior.
   SubtreeHasInstantFalse = 0b10000000000000,
+  // The client should attempt a static prefetch for this route: the render
+  // that produced this tree did not access any runtime data (cookies,
+  // headers, fallback params, searchParams, ...), so a static prefetch is
+  // expected to be as complete as a runtime one. Purely advisory, and both
+  // error directions are safe: if set when a runtime request is actually
+  // needed, the static responses' own `needsRuntimeRequest` values (the
+  // load-bearing, per-segment signal) direct the client to follow up — the
+  // cost is a wasted static attempt. If unset when static would have
+  // sufficed, the client goes straight to a runtime prefetch, which is a
+  // superset of the static response — the cost is only reduced cacheability.
+  // Unlike the other bits, this one is computed per render, not per build:
+  // it's exempt from the build-constancy invariant and may change between
+  // responses for the same build ID. Only set in `/_tree` prefetch responses
+  // (never in the FlightRouterState of dynamic navigations). Does not
+  // propagate.
+  ShouldAttemptStaticPrefetch = 0b100000000000000,
 }
 
 /**
@@ -433,6 +449,19 @@ export type InitialRSCPayload = {
   r?: VaryParamsIterable
   /** staleTime in seconds - Only present when Cache Components is enabled. */
   s?: AsyncIterable<number>
+  /**
+   * runtimeDataAccessed — whether the render has accessed a data source that
+   * hangs during a static prerender but would resolve during a runtime
+   * prerender (cookies, headers, fallback params, searchParams, ...). Yields
+   * a value whenever the answer changes, so the position of each value in
+   * the stream records the stage the access happened in; a truncated (shell)
+   * decode reads the answer as of the shell stage. Used when generating
+   * per-segment prefetch responses (`needsRuntimeRequest`) and the route
+   * tree hint (`PrefetchHint.ShouldAttemptStaticPrefetch`, derived from the
+   * final value). Only present for static prerenders when Cache Components
+   * is enabled.
+   */
+  u?: AsyncIterable<boolean>
   /** staticStageByteLength - Resolves when the static stage ends. */
   l?: Promise<number>
   /**

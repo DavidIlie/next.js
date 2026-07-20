@@ -23,6 +23,7 @@ import { InvariantError } from '../../shared/lib/invariant-error'
 import type { StagedRenderingController } from './staged-rendering'
 import type { ValidationBoundaryTracking } from './instant-validation/boundary-tracking'
 import type { InstantValidationSampleTracking } from './instant-validation/instant-samples'
+import type { RuntimeDataAccessedIterable } from './runtime-data-accessed'
 
 export type WorkUnitPhase = 'action' | 'render' | 'after'
 
@@ -152,6 +153,26 @@ export interface PrerenderStoreModernServer
   readonly type: 'prerender'
 
   readonly stagedRendering: StagedRenderingController | null
+
+  /**
+   * When not null, records whether the render has accessed a data source
+   * that hangs during a static prerender but would resolve during a runtime
+   * prerender — cookies, headers, fallback params, searchParams, and cache
+   * entries excluded only from static prerenders. See
+   * `makeRuntimeHangingPromise` and `makeStageHangingPromise`, which is
+   * where most of the tracking happens (via `trackRuntimeDataAccessed`).
+   *
+   * The iterable is embedded in the RSC payload (`InitialRSCPayload['u']`)
+   * so the stream position of each recorded value marks the stage the access
+   * happened in; the per-segment prefetch encoding (`collectSegmentData`)
+   * extracts it from the page data to tell the client whether a runtime
+   * prefetch request could be skipped. Tracking is page-global: an access
+   * anywhere in the page poisons all segments (per-segment granularity is
+   * recovered downstream for segments whose content is provably complete).
+   * Shared between the payload and render stores of the final prerender so
+   * it observes accesses from both.
+   */
+  readonly runtimeDataAccessedIterable: RuntimeDataAccessedIterable | null
 }
 
 export interface PrerenderStoreModernRuntime

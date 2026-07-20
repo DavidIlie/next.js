@@ -2,7 +2,10 @@ import {
   RenderStage,
   type AdvanceableRenderStage,
 } from './app-render/staged-rendering'
-import type { RequestStore } from './app-render/work-unit-async-storage.external'
+import type {
+  RequestStore,
+  WorkUnitStore,
+} from './app-render/work-unit-async-storage.external'
 import { workUnitAsyncStorage } from './app-render/work-unit-async-storage.external'
 import { getServerReact, getClientReact } from './runtime-reacts.external'
 
@@ -63,13 +66,22 @@ type AbortListeners = Array<() => void>
 const abortListenersBySignal = new WeakMap<AbortSignal, AbortListeners>()
 
 /**
- * This function constructs a promise that will never resolve. This is primarily
- * useful for cacheComponents where we use promise resolution timing to determine which
- * parts of a render can be included in a prerender.
+ * Constructs a promise that never resolves, standing in for *dynamic* data:
+ * data that is only available during a real dynamic request and hangs in
+ * every kind of prerender — `io()`, `connection()`, uncached `fetch()`.
+ *
+ * This is primarily useful for cacheComponents where we use promise
+ * resolution timing to determine which parts of a render can be included in a
+ * prerender.
+ *
+ * Records nothing on the prerender store: the promise's holes are only ever
+ * filled by a real dynamic request, so a runtime prefetch response would have
+ * the same holes as the static one. If the data source would resolve during a
+ * runtime prerender, use `makeRuntimeHangingPromise` instead.
  *
  * @internal
  */
-export function makeHangingPromise<T>(
+export function makeDynamicHangingPromise<T>(
   signal: AbortSignal,
   route: string,
   expression: string
@@ -78,6 +90,114 @@ export function makeHangingPromise<T>(
     signal,
     new HangingPromiseRejectionError(route, expression)
   )
+}
+
+/**
+ * Constructs a promise that never resolves, standing in for *runtime* data:
+ * data that hangs during a static prerender but is available during a runtime
+ * prerender (the kind that backs a runtime prefetch request: request data
+ * like cookies and headers is available, but the render is still not a real
+ * dynamic request). Examples: cookies, headers, fallback params,
+ * searchParams, and cache entries that are excluded only from static
+ * prerenders.
+ *
+ * Creating one of these during a static prerender records on the prerender
+ * store that a runtime prefetch would produce more content than the static
+ * response (`runtimeDataAccessed`), which the segment prefetch encoding uses
+ * to tell the client whether a runtime prefetch request could be skipped.
+ *
+ * When unsure whether data is dynamic or runtime, prefer this method — the
+ * cost of over-recording is a redundant runtime prefetch request; the cost of
+ * under-recording is a permanently missing one.
+ *
+ * `workUnitStore` may be null ONLY when the caller tracks the access itself
+ * at observation time instead of creation time. This is for promises the
+ * framework creates eagerly whether or not anything reads them (e.g. the
+ * `searchParams` prop constructed for every page): recording at creation
+ * would mark every render. Such a caller MUST call `trackRuntimeDataAccessed`
+ * from every path that observes the promise (e.g. the proxy traps for
+ * `then`/`status`), against the work unit store active at access time.
+ *
+ * @internal
+ */
+export function makeRuntimeHangingPromise<T>(
+  signal: AbortSignal,
+  route: string,
+  expression: string,
+  workUnitStore: WorkUnitStore | null
+): Promise<T> {
+  if (workUnitStore !== null) {
+    trackRuntimeDataAccessed(workUnitStore)
+  }
+  return makeHangingPromiseWithError(
+    signal,
+    new HangingPromiseRejectionError(route, expression)
+  )
+}
+
+/**
+ * Constructs a promise that never resolves, standing in for data that is only
+ * accessible in a later *stage* of rendering than this render reaches — e.g.
+ * a prefetchable short-stale cache entry that's excluded from shells when the
+ * render ends at the shell stage, or params during a runtime-prefetch render
+ * that stops before the stage where params resolve.
+ *
+ * A render that runs through the later stage would include the data; in
+ * particular a runtime prefetch renders through its later stages, so on a
+ * static prerender store this records `runtimeDataAccessed`, same as
+ * `makeRuntimeHangingPromise`.
+ *
+ * @internal
+ */
+export function makeStageHangingPromise<T>(
+  signal: AbortSignal,
+  route: string,
+  expression: string,
+  workUnitStore: WorkUnitStore
+): Promise<T> {
+  trackRuntimeDataAccessed(workUnitStore)
+  return makeHangingPromiseWithError(
+    signal,
+    new HangingPromiseRejectionError(route, expression)
+  )
+}
+
+/**
+ * Records on a static prerender store that the render accessed a data source
+ * which would have resolved during a runtime prerender. No-op for all other
+ * store types.
+ *
+ * `makeRuntimeHangingPromise` and `makeStageHangingPromise` call this
+ * automatically; call it directly only where a hanging promise is cached
+ * across stores (so a cache hit must still record the access), where the
+ * access is observed separately from the promise's creation (see the null
+ * `workUnitStore` case of `makeRuntimeHangingPromise`), or where the
+ * prerender is aborted synchronously instead of hanging.
+ */
+export function trackRuntimeDataAccessed(workUnitStore: WorkUnitStore): void {
+  switch (workUnitStore.type) {
+    case 'prerender':
+      // Recording at the current position in the Flight stream is what makes
+      // the value rewindable per stage. The iterable dedupes, so repeated
+      // accesses only yield one value.
+      workUnitStore.runtimeDataAccessedIterable?.update(true)
+      break
+    case 'prerender-client':
+    case 'prerender-ppr':
+    case 'prerender-legacy':
+    case 'prerender-runtime':
+    case 'validation-client':
+    case 'request':
+    case 'cache':
+    case 'private-cache':
+    case 'unstable-cache':
+    case 'generate-static-params':
+      // Only the modern server prerender tracks this; see the field docs on
+      // PrerenderStoreModernServer.
+      break
+    default:
+      workUnitStore satisfies never
+  }
 }
 
 export function makeClientHookHangingPromise<T>(

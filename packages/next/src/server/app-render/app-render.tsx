@@ -23,6 +23,7 @@ import type {
   InstantValidationSamples,
   PrerenderStoreModernClient,
   PrerenderStoreModernRuntime,
+  PrerenderStoreModernServer,
   RequestStore,
   ValidationStoreClient,
   WorkUnitStore,
@@ -228,6 +229,7 @@ import {
   createSelectStaleTime,
   trackStaleTime,
 } from './stale-time'
+import { RuntimeDataAccessedIterable } from './runtime-data-accessed'
 
 import { HTML_CONTENT_TYPE_HEADER, INFINITE_CACHE } from '../../lib/constants'
 import { createComponentStylesAndScripts } from './create-component-styles-and-scripts'
@@ -7992,6 +7994,7 @@ async function prerenderToStream(
         hmrRefreshHash: undefined,
         // We don't track vary params during initial prerender, only the final one
         varyParamsAccumulator: null,
+        runtimeDataAccessedIterable: null,
       }
 
       // We're not going to use the result of this render because the only time it could be used
@@ -8026,6 +8029,7 @@ async function prerenderToStream(
         hmrRefreshHash: undefined,
         // We don't track vary params during initial prerender, only the final one
         varyParamsAccumulator: null,
+        runtimeDataAccessedIterable: null,
       })
 
       const initialPrerenderOptions = {
@@ -8250,7 +8254,16 @@ async function prerenderToStream(
         finalStage: RenderStage.Static,
       })
 
-      const finalServerPayloadPrerenderStore: PrerenderStore = {
+      // Records runtime data accesses from the payload and render stores
+      // below into the RSC payload (as `u`), so that each change is
+      // serialized at the stream position where it happened. Used when
+      // generating per-segment prefetch responses. Request data props
+      // (params, searchParams) are created while the RSC payload is
+      // constructed, under the payload store; both stores share the same
+      // iterable so it observes the whole history.
+      const runtimeDataAccessedIterable = new RuntimeDataAccessedIterable()
+
+      const finalServerPayloadPrerenderStore: PrerenderStoreModernServer = {
         type: 'prerender',
         phase: 'render',
         rootParams,
@@ -8276,6 +8289,7 @@ async function prerenderToStream(
         resumeDataCache,
         hmrRefreshHash: undefined,
         varyParamsAccumulator,
+        runtimeDataAccessedIterable,
       }
 
       const shellByteLengthDeferred = appShells
@@ -8297,6 +8311,13 @@ async function prerenderToStream(
       if (cachedNavigations) {
         staleTimeIterable = new StaleTimeIterable()
         finalServerPayload.s = staleTimeIterable
+      }
+
+      if (shouldGenerateStaticFlightData(workStore)) {
+        // Embed the runtime data access tracking in the payload so
+        // collectSegmentData can replay it per stage. Only needed when the
+        // Flight data will be decomposed into segment prefetches below.
+        finalServerPayload.u = runtimeDataAccessedIterable
       }
 
       const serverDynamicTracking = createDynamicTrackingState(
@@ -8323,6 +8344,7 @@ async function prerenderToStream(
         resumeDataCache,
         hmrRefreshHash: undefined,
         varyParamsAccumulator,
+        runtimeDataAccessedIterable,
       })
 
       if (staleTimeIterable !== undefined) {
@@ -8382,6 +8404,7 @@ async function prerenderToStream(
           if (staleTimeIterable !== undefined) {
             staleTimeIterable.close()
           }
+          runtimeDataAccessedIterable.close()
           finishAccumulatingVaryParams(varyParamsAccumulator)
         }
       }
@@ -8471,6 +8494,7 @@ async function prerenderToStream(
           if (staleTimeIterable !== undefined) {
             staleTimeIterable.close()
           }
+          runtimeDataAccessedIterable.close()
           finishAccumulatingVaryParams(varyParamsAccumulator)
 
           if (shellByteLengthDeferred && collectedChunksByStage) {
@@ -9282,6 +9306,7 @@ async function prerenderToStream(
         resumeDataCache: originalResumeDataCache,
         hmrRefreshHash: undefined,
         varyParamsAccumulator: null,
+        runtimeDataAccessedIterable: null,
       }
 
       const errorRSCPayload = await workUnitAsyncStorage.run(

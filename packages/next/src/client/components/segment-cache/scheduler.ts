@@ -839,10 +839,14 @@ function pingRootRouteTree(
             // opt-in because the Shell for a given route is reusable across
             // all given params, by definition. So it does not lead to an
             // explosion in prefetching costs.
-            // TODO: In the future, the server could emit a hint to tell us
-            // *not* to prefetch via a runtime request, via build-time
-            // heuristics, like if no `cookies()` call was detected. We'll
-            // leave this optimization for later.
+            // TODO: The server now emits signals for skipping unnecessary
+            // runtime prefetch requests: an advisory
+            // PrefetchHint.ShouldAttemptStaticPrefetch bit on the route
+            // tree, and a load-bearing per-segment `needsRuntimeRequest`
+            // iterable on the static segment responses (the last value
+            // visible in the decode is the answer; rewindable at the shell
+            // boundary). They aren't consumed yet; wiring them up is left
+            // for a follow-up.
             task.phase === PrefetchPhase.Shell
           ) {
             const runtimeStrategy =
@@ -1124,6 +1128,10 @@ function pingNewPartOfCacheComponentsTree(
   // runtime shell request. For fully static pages, it doesn't matter since
   // server will respond to even a runtime request with a static response. For
   // a partially static page, we can send down a hint from the server.
+  // The server-side hints for this now exist
+  // (PrefetchHint.ShouldAttemptStaticPrefetch on the route tree,
+  // `needsRuntimeRequest` on static segment responses) but aren't
+  // consumed yet.
 
   if (
     task.phase === PrefetchPhase.Speculative &&

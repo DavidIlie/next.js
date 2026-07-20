@@ -16,7 +16,7 @@ import {
   NEXT_CACHE_TAG_MAX_LENGTH,
 } from '../../lib/constants'
 import { markCurrentScopeAsDynamic } from '../app-render/dynamic-rendering'
-import { makeHangingPromise } from '../dynamic-rendering-utils'
+import { makeDynamicHangingPromise } from '../dynamic-rendering-utils'
 import type { FetchMetric } from '../base-http'
 import { createDedupeFetch } from './dedupe-fetch'
 import {
@@ -600,7 +600,7 @@ export function createPatchedFetcher(
                 cacheSignal = null
               }
 
-              return makeHangingPromise<Response>(
+              return makeDynamicHangingPromise<Response>(
                 workUnitStore.renderSignal,
                 workStore.route,
                 'fetch()'
@@ -735,7 +735,7 @@ export function createPatchedFetcher(
                     cacheSignal.endRead()
                     cacheSignal = null
                   }
-                  return makeHangingPromise<Response>(
+                  return makeDynamicHangingPromise<Response>(
                     workUnitStore.renderSignal,
                     workStore.route,
                     'fetch()'
@@ -1149,7 +1149,7 @@ export function createPatchedFetcher(
                     cacheSignal.endRead()
                     cacheSignal = null
                   }
-                  return makeHangingPromise<Response>(
+                  return makeDynamicHangingPromise<Response>(
                     workUnitStore.renderSignal,
                     workStore.route,
                     'fetch()'
@@ -1201,7 +1201,7 @@ export function createPatchedFetcher(
                   case 'prerender-client':
                   case 'prerender-runtime':
                   case 'validation-client':
-                    return makeHangingPromise<Response>(
+                    return makeDynamicHangingPromise<Response>(
                       workUnitStore.renderSignal,
                       workStore.route,
                       'fetch()'
