@@ -1449,6 +1449,31 @@ describe('generateRouteStaticParams', () => {
       ).rejects.toThrow('Tech not allowed')
     })
 
+    it('should reject an empty array in export mode', async () => {
+      const segments: TestAppSegment[] = [createMockSegment(async () => [])]
+      const store = createMockWorkStore()
+
+      await expect(
+        generateRouteStaticParams(segments, store, false, [], true)
+      ).rejects.toThrow(
+        'Page "/test-page" returned an empty array from "generateStaticParams()". With "output: export", at least one route must be generated. See more info here: https://nextjs.org/docs/messages/generate-static-params'
+      )
+    })
+
+    it('should reject an empty array from a nested generateStaticParams in export mode', async () => {
+      const segments: TestAppSegment[] = [
+        createMockSegment(async () => [{ lang: 'en' }]),
+        createMockSegment(async () => []),
+      ]
+      const store = createMockWorkStore()
+
+      await expect(
+        generateRouteStaticParams(segments, store, false, [], true)
+      ).rejects.toThrow(
+        'Page "/test-page" returned an empty array from "generateStaticParams()". With "output: export", at least one route must be generated. See more info here: https://nextjs.org/docs/messages/generate-static-params'
+      )
+    })
+
     it('should throw error when generateStaticParams returns empty array with isRoutePPREnabled=true', async () => {
       const segments: TestAppSegment[] = [
         createMockSegment(async () => [{ lang: 'en' }]),
