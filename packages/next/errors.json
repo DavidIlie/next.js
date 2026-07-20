@@ -1421,5 +1421,6 @@
   "1420": "shouldTrackSyncInterrupt allowed a sync IO interrupt in an unexpected stage: %s",
   "1421": "The lazy module is still loading. It must be awaited with `waitUntilLoaded()` before it can be accessed.",
   "1422": "MIN_PREFETCHABLE_STALE must not exceed MIN_SHELL_STALE.",
-  "1423": "Invalid value returned from generateStaticParams for \"%s\". Expected an array, but received type %s. See more info here: https://nextjs.org/docs/messages/generate-static-params"
+  "1423": "Invalid value returned from generateStaticParams for \"%s\". Expected an array, but received type %s. See more info here: https://nextjs.org/docs/messages/generate-static-params",
+  "1424": "Invalid value at index %s returned from generateStaticParams for \"%s\". Expected an object, but received type %s. See more info here: https://nextjs.org/docs/messages/generate-static-params"
 }
