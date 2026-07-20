@@ -1162,6 +1162,17 @@ export async function buildAppStaticPaths({
       ? [...prerenderedRoutesByPathname.values()]
       : undefined
 
+  if (
+    nextConfigOutput === 'export' &&
+    pathnameRouteParamSegments.length > 0 &&
+    routeParams.length > 0 &&
+    !prerenderedRoutes?.length
+  ) {
+    throw new Error(
+      `Page "${page}" did not generate any valid routes from "generateStaticParams()". With "output: export", at least one returned params object must produce a route. See more info here: https://nextjs.org/docs/messages/generate-static-params`
+    )
+  }
+
   // Now we have to set the throwOnEmptyStaticShell for each of the routes.
   if (prerenderedRoutes && cacheComponents) {
     assignStaticShellMetadata(prerenderedRoutes, prerenderablePathSegments)

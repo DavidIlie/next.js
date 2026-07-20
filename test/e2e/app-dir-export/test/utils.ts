@@ -217,7 +217,11 @@ export function runTests({
   dynamicPage?: string
   dynamicParams?: string
   dynamicApiRoute?: string
-  generateStaticParamsOpt?: 'set noop' | 'set client' | 'set empty'
+  generateStaticParamsOpt?:
+    | 'set noop'
+    | 'set client'
+    | 'set empty'
+    | 'set wrong param'
   expectedErrMsg?: string | RegExp
 }) {
   let { next, skipped, isNextDev } = nextTestSetup({
@@ -281,6 +285,13 @@ export function runTests({
         content.replace(
           `return [{ slug: 'first' }, { slug: 'second' }]`,
           'return []'
+        )
+      )
+    } else if (generateStaticParamsOpt === 'set wrong param') {
+      await next.patchFile('app/another/[slug]/page.js', (content) =>
+        content.replace(
+          `return [{ slug: 'first' }, { slug: 'second' }]`,
+          `return [{ id: 'first' }]`
         )
       )
     }
