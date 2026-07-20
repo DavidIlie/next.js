@@ -96,10 +96,42 @@ impl CleanupOldEdgesOperation {
                                     _ => true,
                                 });
                                 let mut task = ctx.task(task_id, TaskDataCategory::All);
-                                for task_id in children.iter() {
-                                    task.remove_children(task_id);
+                                // Track which persistent children were *actually* removed (the edge
+                                // was present) so we adjust the child-side count exactly once per
+                                // real edge removal. Gating on the `remove_children` return makes
+                                // this replay-safe: a resumed CleanupOldEdges re-removes the same
+                                // edges, and edges already gone (returning false) are skipped.
+                                let mut removed_persistent_children: SmallVec<[TaskId; 4]> =
+                                    SmallVec::new();
+                                for child_id in children.iter() {
+                                    if task.remove_children(child_id) && !child_id.is_transient() {
+                                        removed_persistent_children.push(*child_id);
+                                    }
+                                }
+                                // Each removed persistent child loses a parent. A persistent parent
+                                // drops the child's durable `parent_count` (queued so it is
+                                // crash-consistent); a transient parent drops the session-only
+                                // `transient_ref_count` (skipped during serialization, never
+                                // replayed). Both ride the queue via the same job family, so the
+                                // handler — not this site — adjusts the right counter and takes the
+                                // child guards (avoiding a second guard while `task` is still
+                                // held).
+                                if !removed_persistent_children.is_empty() {
+                                    let job = if task_id.is_transient() {
+                                        AggregationUpdateJob::AdjustTransientRefCount {
+                                            task_ids: removed_persistent_children,
+                                            delta: -1,
+                                        }
+                                    } else {
+                                        AggregationUpdateJob::AdjustParentCount {
+                                            task_ids: removed_persistent_children,
+                                            delta: -1,
+                                        }
+                                    };
+                                    queue.push(job);
                                 }
                                 if is_aggregating_node(get_aggregation_number(&task)) {
+                                    drop(task);
                                     queue.push(AggregationUpdateJob::InnerOfUpperLostFollowers {
                                         upper_id: task_id,
                                         lost_follower_ids: children,
@@ -172,6 +204,19 @@ impl CleanupOldEdgesOperation {
                                     task: cell_task_id,
                                     cell,
                                 } = forward;
+                                // Under the GC phase, a collected task stays resident
+                                // (soft-deleted) so this scrub
+                                // finds a live entry; a non-resident target would mean
+                                // `ctx.task` is about to resurrect an already-collected task from
+                                // disk (the bug soft-deletion fixes). `gc_target_resident` is
+                                // `None` outside GC, where
+                                // restoring a missing target is legitimate.
+                                debug_assert!(
+                                    ctx.gc_target_resident(cell_task_id) != Some(false),
+                                    "gc: CleanupOldEdges({task_id}) cell-dep target \
+                                     {cell_task_id} is not resident — would resurrect a collected \
+                                     task"
+                                );
                                 {
                                     let mut task = ctx.task(cell_task_id, TaskDataCategory::Data);
                                     task.remove_cell_dependents(&CellRef {
@@ -213,6 +258,14 @@ impl CleanupOldEdgesOperation {
                                     dependent_task = %task_id
                                 )
                                 .entered();
+                                // See the CellDependency arm: under GC the target must stay
+                                // resident; a non-resident one would resurrect a collected task.
+                                debug_assert!(
+                                    ctx.gc_target_resident(output_task_id) != Some(false),
+                                    "gc: CleanupOldEdges({task_id}) output-dep target \
+                                     {output_task_id} is not resident — would resurrect a \
+                                     collected task"
+                                );
                                 {
                                     let mut task = ctx.task(output_task_id, TaskDataCategory::Data);
                                     task.remove_output_dependent(&task_id);
