@@ -3,11 +3,10 @@
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { buildTestReport, datadogTestRunUrl } from './test-report.js'
 
 const TEST_COMMENT_MARKER = '<!-- __NEXT_TEST_REPORT_COMMENT__ -->'
 const STATS_COMMENT_MARKER = '<!-- __NEXT_STATS_COMMENT__ -->'
-const CONTRIBUTING_URL =
-  'https://github.com/vercel/next.js/blob/canary/contributing.md'
 const MAX_COMMENT_LENGTH = 62_000
 const MAX_RESULT_MESSAGE_LENGTH = 12_000
 
@@ -738,64 +737,35 @@ function extractDelimitedBlock(logs, start, end) {
 }
 
 function buildTestReportComment({ failedSuites, otherFailures, sha }) {
-  const heading =
-    failedSuites.length > 0 ? '## Failing test suites' : '## Failing CI jobs'
-  const lines = [
-    TEST_COMMENT_MARKER,
-    heading,
-    '',
-    `Commit: ${sha} | [About building and testing Next.js](${CONTRIBUTING_URL})`,
-    '',
-  ]
-
-  for (const suite of failedSuites.sort((a, b) =>
-    `${a.job.name}:${a.testPath}`.localeCompare(`${b.job.name}:${b.testPath}`)
-  )) {
-    const jobMarker = getJobMarker(suite.job.name)
-    lines.push(jobMarker.start)
-    lines.push(
-      `\`${getTestCommand(suite)}\`${getJobTags(suite.job.name)} ([job](${suite.job.html_url}))`
+  const suites = failedSuites
+    .sort((a, b) =>
+      `${a.job.name}:${a.testPath}`.localeCompare(`${b.job.name}:${b.testPath}`)
     )
+    .map((suite) => ({
+      jobName: suite.job.name,
+      title: `\`${getTestCommand(suite)}\`${getJobTags(suite.job.name)} ([job](${suite.job.html_url}))`,
+      failureLines: [...suite.groups.keys()]
+        .sort()
+        .flatMap((group) =>
+          suite.groups
+            .get(group)
+            .map((fail) => formatFailureLine(suite, group, fail))
+        ),
+      resultMessage: suite.resultMessage,
+    }))
 
-    const sortedGroups = [...suite.groups.keys()].sort()
-    for (const group of sortedGroups) {
-      const fails = suite.groups.get(group)
-      lines.push(
-        `- ${fails
-          .map((fail) => formatFailureLine(suite, group, fail))
-          .join('\n- ')}`
-      )
-    }
-
-    if (suite.resultMessage) {
-      lines.push('')
-      lines.push('<details>')
-      lines.push('<summary>Expand output</summary>')
-      lines.push('')
-      lines.push(suite.resultMessage)
-      lines.push('</details>')
-    }
-
-    lines.push(jobMarker.end)
-    lines.push('')
-  }
-
-  if (otherFailures.length > 0) {
-    if (failedSuites.length > 0) {
-      lines.push('### Other failing CI jobs')
-      lines.push('')
-    }
-
-    for (const { job, reason } of otherFailures.sort((a, b) =>
-      a.job.name.localeCompare(b.job.name)
-    )) {
-      lines.push(
-        `- [${job.name}](${job.html_url})${reason ? `: ${reason}` : ''}`
-      )
-    }
-  }
-
-  return lines.join('\n')
+  return buildTestReport({
+    marker: TEST_COMMENT_MARKER,
+    sha,
+    suites,
+    otherFailures: otherFailures
+      .sort((a, b) => a.job.name.localeCompare(b.job.name))
+      .map(({ job, reason }) => ({
+        name: job.name,
+        url: job.html_url,
+        reason,
+      })),
+  })
 }
 
 function formatFailureLine(suite, group, fail) {
@@ -805,25 +775,14 @@ function formatFailureLine(suite, group, fail) {
     return testName
   }
 
-  const query = datadogSearchQuery({
-    '@git.repository.id': `github.com/${suite.owner}/${suite.repo}`,
-    '@git.commit.head_sha': suite.sha,
-    '@test.name': testName.replace(/ > /g, ' '),
-    '@test.type': jobName.includes('turbopack') ? 'turbopack' : 'nextjs',
-    '@test.status': 'fail',
+  const linkUrl = datadogTestRunUrl({
+    owner: suite.owner,
+    repo: suite.repo,
+    sha: suite.sha,
+    testName: testName.replace(/ > /g, ' '),
+    testType: jobName.includes('turbopack') ? 'turbopack' : 'nextjs',
   })
-  const linkUrl = new URL('https://app.datadoghq.com/ci/test/runs')
-  linkUrl.searchParams.set('query', query)
-  return `${testName} ([DD](${linkUrl.href}))`
-}
-
-function datadogSearchQuery(values) {
-  return Object.entries(values)
-    .map(([key, value]) => {
-      const escapedValue = value.replace(/"/g, '\\"')
-      return `${key}:"${escapedValue}"`
-    })
-    .join(' ')
+  return `${testName} ([DD](${linkUrl}))`
 }
 
 function getTestCommand(suite) {
@@ -860,14 +819,6 @@ function getJobTags(jobName) {
   }
 
   return tags
-}
-
-function getJobMarker(jobName) {
-  const safeName = jobName.replaceAll('-->', '')
-  return {
-    start: `<!-- J"${safeName}" -->`,
-    end: `<!-- /J"${safeName}" -->`,
-  }
 }
 
 function normalizeTestPath(testName) {
