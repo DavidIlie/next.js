@@ -2,7 +2,7 @@ use anyhow::Result;
 use bincode::{Decode, Encode};
 use swc_core::{
     common::util::take::Take,
-    ecma::ast::{CallExpr, Expr, ExprOrSpread, Lit},
+    ecma::ast::{CallExpr, Expr, ExprOrSpread, Lit, Prop, PropOrSpread},
     quote,
 };
 use turbo_rcstr::{RcStr, rcstr};
@@ -20,6 +20,7 @@ use turbopack_core::{
 use turbopack_resolve::ecmascript::cjs_resolve;
 
 use crate::{
+    analyzer::cjs_ast::prop_name_is,
     chunk::{EcmascriptChunkPlaceable, EcmascriptExports},
     code_gen::{CodeGen, CodeGeneration, IntoCodeGenReference},
     create_visitor,
@@ -408,9 +409,9 @@ impl From<CjsRequireCacheAccess> for CodeGen {
     }
 }
 
-/// Removes each named `exports.NAME = …` write the module graph proved unused.
-/// Built by the analyzer for statically-analyzable CommonJS modules; recognition
-/// happens inline during the walk (see `analyzer::graph::visitor`).
+/// Removes each named CommonJS export the module graph proved unused. Built by the
+/// analyzer for statically-analyzable CommonJS modules; recognition happens inline
+/// during the walk (see `analyzer::graph::visitor`).
 #[derive(
     PartialEq, Eq, TraceRawVcs, ValueDebugFormat, NonLocalValue, Hash, Debug, Encode, Decode,
 )]
@@ -421,14 +422,37 @@ pub struct CjsExportsDropCodeGen {
     has_es_module: bool,
 }
 
-/// A single named `exports.NAME = …` write.
+/// How a recognized CommonJS export is written, and thus how it's dropped.
+#[derive(
+    PartialEq,
+    Eq,
+    TraceRawVcs,
+    ValueDebugFormat,
+    NonLocalValue,
+    Hash,
+    Debug,
+    Encode,
+    Decode,
+    Clone,
+    Copy,
+)]
+pub enum CjsExportDropKind {
+    /// A standalone `exports.NAME = …` write (replaced by its value).
+    Write,
+    /// A property of a `module.exports = { … }` object literal (removed from it).
+    ObjectLiteralProperty,
+}
+
+/// A single named CommonJS export.
 #[derive(
     PartialEq, Eq, TraceRawVcs, ValueDebugFormat, NonLocalValue, Hash, Debug, Encode, Decode,
 )]
 pub struct DroppableCjsExportAssignment {
     pub name: RcStr,
-    /// Path to the `exports.NAME = …` assignment expression.
+    /// Path to the `exports.NAME = …` assignment, or to the `module.exports = { … }`
+    /// assignment (shared by all its properties) — depending on `kind`.
     pub path: AstPath,
+    pub kind: CjsExportDropKind,
 }
 
 impl CjsExportsDropCodeGen {
@@ -465,19 +489,48 @@ impl CjsExportsDropCodeGen {
             if export_usage_info.is_export_used(&drop.name) {
                 continue;
             }
+            let name = drop.name.clone();
+            let kind = drop.kind;
             visitors.push(create_visitor!(
                 drop.path,
                 visit_mut_expr,
                 |expr: &mut Expr| {
-                    if let Expr::Assign(assign) = expr {
-                        let value = assign.right.take();
-                        *expr = *value;
+                    match kind {
+                        // `exports.NAME = <value>` → `<value>` (keep side effects).
+                        CjsExportDropKind::Write => {
+                            if let Expr::Assign(assign) = expr {
+                                let value = assign.right.take();
+                                *expr = *value;
+                            }
+                        }
+                        // `module.exports = { a, b }` (with `b` unused) →
+                        // `module.exports = { a }`; the dropped value is pure.
+                        CjsExportDropKind::ObjectLiteralProperty => {
+                            if let Expr::Assign(assign) = expr
+                                && let Expr::Object(obj) = &mut *assign.right
+                            {
+                                obj.props.retain(|prop| !is_named_object_prop(prop, &name));
+                            }
+                        }
                     }
                 }
             ));
         }
 
         Ok(CodeGeneration::visitors(visitors))
+    }
+}
+
+/// Whether an object-literal property is the named export `name` (a `name:` or
+/// shorthand `name` entry).
+fn is_named_object_prop(prop: &PropOrSpread, name: &str) -> bool {
+    let PropOrSpread::Prop(prop) = prop else {
+        return false;
+    };
+    match &**prop {
+        Prop::Shorthand(id) => id.sym.as_ref() == name,
+        Prop::KeyValue(kv) => prop_name_is(&kv.key, name),
+        _ => false,
     }
 }
 

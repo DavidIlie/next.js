@@ -21,14 +21,16 @@ use crate::{
     AnalyzeMode,
     analyzer::{
         Bump, BumpVec, ConstantValue, JsValue, WellKnownFunctionKind,
-        cjs_ast::{is_exports_object, is_global},
+        cjs_ast::{
+            as_module_exports_object_literal, is_exports_object, is_global, static_prop_names,
+        },
         graph::{ConditionalKind, Effect, EffectArg, EffectsBlock, EvalContext, VarGraph},
         is_unresolved_id,
     },
     code_gen::CodeGen,
     references::{
         AstPath,
-        cjs::{CjsExportsDropCodeGen, DroppableCjsExportAssignment},
+        cjs::{CjsExportDropKind, CjsExportsDropCodeGen, DroppableCjsExportAssignment},
         esm::EsmModuleItem,
     },
     utils::{AstPathRange, unparen},
@@ -572,8 +574,20 @@ mod analyzer_state {
         }
 
         pub(super) fn record_cjs_export(&mut self, name: RcStr, path: AstPath) {
+            self.push_cjs_export(name, path, CjsExportDropKind::Write);
+        }
+
+        /// Records a named export of a `module.exports = { … }` object literal. All
+        /// such drops for one object share `path` (the assignment); the code-gen
+        /// removes each unused property from the object literal.
+        pub(super) fn record_cjs_object_export(&mut self, name: RcStr, path: AstPath) {
+            self.push_cjs_export(name, path, CjsExportDropKind::ObjectLiteralProperty);
+        }
+
+        fn push_cjs_export(&mut self, name: RcStr, path: AstPath, kind: CjsExportDropKind) {
             if let Some(c) = &mut self.state.cjs_exports {
-                c.writes.push(DroppableCjsExportAssignment { name, path });
+                c.writes
+                    .push(DroppableCjsExportAssignment { name, path, kind });
             }
         }
 
@@ -1237,6 +1251,34 @@ impl<'a> Analyzer<'a, '_> {
             as_parent_path(ast_path).into(),
         );
     }
+
+    /// Records the named exports of a top-level `module.exports = { … }` object
+    /// literal. A spread, method, getter/setter, or computed key makes the export
+    /// set unknowable, so it taints instead.
+    fn recognize_cjs_object_exports(
+        &mut self,
+        n: &AssignExpr,
+        ast_path: &AstNodePath<AstParentNodeRef<'_>>,
+    ) {
+        // Only a top-level assignment defines the module's exports.
+        if self.is_in_fn() || self.is_in_nested_block_scope() {
+            self.taint_cjs_exports();
+            return;
+        }
+        let Some(obj) = as_module_exports_object_literal(n, self.eval_context.unresolved_mark)
+        else {
+            return;
+        };
+        match static_prop_names(obj) {
+            Some(names) => {
+                let path: AstPath = as_parent_path(ast_path).into();
+                for name in names {
+                    self.record_cjs_object_export(name, path.clone());
+                }
+            }
+            None => self.taint_cjs_exports(),
+        }
+    }
 }
 
 impl VisitAstPath for Analyzer<'_, '_> {
@@ -1269,8 +1311,22 @@ impl VisitAstPath for Analyzer<'_, '_> {
         // and visit the target inside a `cjs_export_target` scope so `exports` / `module`
         // don't taint the module (see `visit_ident`).
         let is_cjs_export = self.cjs_exports_enabled() && self.is_named_cjs_export_target(&n.left);
+        // `module.exports = { a, b, c }` — a whole-exports object literal whose
+        // properties are the module's named exports.
+        let is_cjs_object_export = !is_cjs_export
+            && self.cjs_exports_enabled()
+            && as_module_exports_object_literal(n, self.eval_context.unresolved_mark).is_some();
         if is_cjs_export {
             self.maybe_recognize_cjs_export(n, ast_path);
+            let mut ast_path =
+                ast_path.with_guard(AstParentNodeRef::AssignExpr(n, AssignExprField::Left));
+            self.with_cjs_export_target(|this| {
+                n.left.visit_children_with_ast_path(this, &mut ast_path)
+            });
+        } else if is_cjs_object_export {
+            self.recognize_cjs_object_exports(n, ast_path);
+            // Visit the `module.exports` target under the export-target guard so the
+            // `module` read doesn't taint the module.
             let mut ast_path =
                 ast_path.with_guard(AstParentNodeRef::AssignExpr(n, AssignExprField::Left));
             self.with_cjs_export_target(|this| {
@@ -1305,8 +1361,9 @@ impl VisitAstPath for Analyzer<'_, '_> {
         {
             let mut ast_path =
                 ast_path.with_guard(AstParentNodeRef::AssignExpr(n, AssignExprField::Right));
-            // A function assigned directly to a CommonJS export can see `exports` as `this`.
-            if is_cjs_export && matches!(&*n.right, Expr::Fn(_)) {
+            // A function assigned directly to a CommonJS export can see `exports` as
+            // `this`; likewise for functions inside a `module.exports = { … }` literal.
+            if (is_cjs_export && matches!(&*n.right, Expr::Fn(_))) || is_cjs_object_export {
                 self.with_cjs_export_value(|this| this.visit_expr(&n.right, &mut ast_path));
             } else {
                 self.visit_expr(&n.right, &mut ast_path);
