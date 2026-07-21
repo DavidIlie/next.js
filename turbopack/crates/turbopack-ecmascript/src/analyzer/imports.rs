@@ -284,6 +284,8 @@ pub(crate) struct ProgramDeclUsage {
     pub(crate) decl_usages: FxHashMap<Id, DeclUsage>,
     // import -> immediate usage (top level decl)
     pub(crate) import_usages: FxHashMap<usize, DeclUsage>,
+    // import reference -> names it is directly re-exported as (`export { x } from '...'`)
+    pub(crate) reexports: FxHashMap<usize, FxHashSet<RcStr>>,
     // export name -> top level decl
     pub(crate) exports: FxHashMap<RcStr, Id>,
 }
@@ -331,6 +333,24 @@ impl ProgramDeclUsage {
                     },
                 );
             }
+        }
+        // Fold re-exports (`export { x } from "foo"`) into `import_usage` for tree-shaking.
+        for (reference, names) in &self.reexports {
+            let usage = match import_usage.get(reference) {
+                Some(ImportUsage::TopLevel) => continue,
+                // Used locally and re-exported, e.g.
+                // `import {foo} from 'm'; export function w(){foo()} export {foo} from 'm'`
+                // → union: Exports({"w"}) ∪ {"foo"}.
+                Some(ImportUsage::Exports(existing)) => ImportUsage::Exports(
+                    existing
+                        .iter()
+                        .cloned()
+                        .chain(names.iter().cloned())
+                        .collect(),
+                ),
+                None => ImportUsage::Exports(names.iter().cloned().collect()),
+            };
+            import_usage.insert(*reference, usage);
         }
         import_usage
     }
@@ -930,26 +950,37 @@ impl Visit for Analyzer<'_> {
                     annotations.clone(),
                 );
 
-                match spec {
+                let name = match spec {
                     ExportSpecifier::Namespace(n) => {
-                        self.data.exports.insert(
-                            RcStr::from(n.name.atom().as_str()),
-                            Export::ImportedNamespace(i),
-                        );
+                        let name = RcStr::from(n.name.atom().as_str());
+                        self.data
+                            .exports
+                            .insert(name.clone(), Export::ImportedNamespace(i));
+                        name
                     }
                     ExportSpecifier::Default(d) => {
+                        let name = RcStr::from(d.exported.sym.as_str());
                         self.data.exports.insert(
-                            RcStr::from(d.exported.sym.as_str()),
+                            name.clone(),
                             Export::ImportedBinding(i, rcstr!("default"), false),
                         );
+                        name
                     }
                     ExportSpecifier::Named(n) => {
+                        let name =
+                            RcStr::from(n.exported.as_ref().unwrap_or(&n.orig).atom().as_str());
                         self.data.exports.insert(
-                            RcStr::from(n.exported.as_ref().unwrap_or(&n.orig).atom().as_str()),
+                            name.clone(),
                             Export::ImportedBinding(i, RcStr::from(n.orig.atom().as_str()), false),
                         );
+                        name
                     }
-                }
+                };
+                self.program_decl_usage
+                    .reexports
+                    .entry(i)
+                    .or_default()
+                    .insert(name);
             }
         } else {
             for spec in export.specifiers.iter() {
