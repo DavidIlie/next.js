@@ -29,7 +29,7 @@ concurrency:
 jobs:
   evaluate:
     if: ${{ github.repository_owner == 'vercel' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch != 'canary')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -120,7 +120,7 @@ jobs:
   dispatch:
     needs: evaluate
     if: ${{ needs.evaluate.outputs.should_dispatch == 'true' && ((github.event_name == 'workflow_dispatch' && inputs.dispatch) || (github.event_name == 'workflow_run' && vars.ENABLE_BACKPORT_CANARY_SYNC == 'true')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Create GitHub App token
         id: release-app-token
