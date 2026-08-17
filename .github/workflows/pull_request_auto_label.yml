@@ -57,7 +57,7 @@ concurrency:
 jobs:
   label:
     if: github.repository_owner == 'vercel'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # To add labels
       pull-requests: write
