@@ -33,7 +33,7 @@ jobs:
   pr-ci-metadata:
     name: Upload PR CI metadata
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -142,7 +142,7 @@ jobs:
     # the comment, and a truly cancelled run (no results at all) is handled by
     # the cancelled fallback in scripts/pr-ci-comment.mjs.
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

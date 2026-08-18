@@ -45,7 +45,7 @@ env:
 
 jobs:
   deploy-target:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Don't trigger this job on `pull_request` events from upstream branches.
     # Those would already run this job on the `push` event
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork }}
@@ -133,7 +133,7 @@ jobs:
     if: ${{ needs.deploy-target.outputs.value != 'skipped' }}
     needs:
       - deploy-target
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       NEXT_TELEMETRY_DISABLED: 1
     steps:
@@ -187,7 +187,7 @@ jobs:
     if: ${{ needs.deploy-target.outputs.value != 'skipped' }}
     needs:
       - deploy-target
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -478,7 +478,7 @@ jobs:
       matrix:
         target: [web, nodejs]
 
-    runs-on: ubuntu-latest-16-core-oss
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -525,7 +525,7 @@ jobs:
   deploy-tarball:
     if: ${{ needs.deploy-target.outputs.value != 'production' }}
     name: Prepare preview tarball
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - deploy-target
       - build
@@ -586,7 +586,7 @@ jobs:
   publishRelease:
     if: ${{ needs.deploy-target.outputs.value == 'production' }}
     name: Potentially publish release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: ${{ needs.deploy-target.outputs.release_environment }}
     needs:
       - deploy-target
@@ -665,7 +665,7 @@ jobs:
     if: ${{ always() && needs.deploy-target.outputs.value != '' }}
     # Coupled with retry logic in retry_test.yml
     name: thank you, build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: exit 1
         if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
@@ -673,7 +673,7 @@ jobs:
   upload_turbopack_bytesize:
     if: ${{ needs.deploy-target.outputs.value != 'automated-preview'}}
     name: Upload Turbopack Bytesize metrics to Datadog
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-native, deploy-target]
     env:
       DATADOG_API_KEY: ${{ secrets.DATA_DOG_API_KEY }}

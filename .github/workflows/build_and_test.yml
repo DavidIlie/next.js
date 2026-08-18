@@ -27,7 +27,7 @@ jobs:
 
   changes:
     name: Determine changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -67,7 +67,7 @@ jobs:
   pr-ci-metadata:
     name: Upload PR CI metadata
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -143,7 +143,7 @@ jobs:
 
   fetch-test-timings:
     name: fetch test timings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: ['changes']
     if: ${{ needs.changes.outputs.docs-only == 'false' }}
     steps:
@@ -227,7 +227,7 @@ jobs:
     secrets: inherit
 
   validate-docs-links:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -316,7 +316,7 @@ jobs:
 
   ast-grep:
     needs: ['changes', 'build-next']
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: ast-grep lint
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1083,7 +1083,7 @@ jobs:
       - test-integration-windows
       - test-prod-windows
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Coupled with retry logic in retry_test.yml
     name: thank you, next
     steps:
